@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ID card scanner</title>
+<style>
+:root{--bg:#eef1f4;--fg:#141b26;--mut:#566074;--card:#fff;--line:#c9d1dc;--acc:#0b6b5e;--accfg:#fff;--hd:#e0a800;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10151c;--fg:#e8edf4;--mut:#9aa6b8;--card:#19212b;--line:#2d3846;--acc:#3dbfa9;--accfg:#06201b}}
+:root[data-theme="dark"]{--bg:#10151c;--fg:#e8edf4;--mut:#9aa6b8;--card:#19212b;--line:#2d3846;--acc:#3dbfa9;--accfg:#06201b}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:16px/1.5 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif;padding:20px 16px 48px}
+main{max-width:1000px;margin:0 auto}
+h1{font:700 1.9rem/1.15 Georgia,"Times New Roman",serif;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:1.05rem;margin:0}
+p{margin:0}.mut{color:var(--mut);font-size:.92rem}
+.bar{display:flex;flex-wrap:wrap;gap:18px;margin:18px 0;padding:14px 16px;background:var(--card);border:1px solid var(--line);border-radius:10px}
+.bar label{display:flex;flex-direction:column;gap:4px;font-size:.88rem;min-width:170px;flex:1}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:16px}
+.side{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+button,.btn{font:inherit;font-size:.92rem;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
+.pri{background:var(--acc);color:var(--accfg);border-color:var(--acc);font-weight:600;padding:12px 22px}
+button:focus-visible,.btn:focus-within{outline:3px solid var(--acc);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+.ed{position:relative;border-radius:6px;overflow:hidden;background:repeating-conic-gradient(var(--line) 0 25%,transparent 0 50%) 0 0/16px 16px;min-height:120px}
+.ed canvas{display:block;width:100%;height:auto;touch-action:none}
+.empty{padding:34px 12px;text-align:center}
+.res{width:100%;height:auto;border:1px solid var(--line);border-radius:4px;background:#fff;display:none}
+.foot{margin-top:18px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<main>
+<h1>ID card scanner</h1>
+<p class="mut">Upload a photo of each side, drag the four handles onto the card&rsquo;s corners, then download one A4 PDF with both sides at 8.5 × 5.5 cm. Everything runs in your browser. Nothing is uploaded.</p>
+
+<div class="bar">
+  <label>Lighting area: <span id="vL"></span><input id="sL" type="range" min="4" max="40" value="12"></label>
+  <label>Text darkness: <span id="vG"></span><input id="sG" type="range" min="80" max="200" value="130"></label>
+  <label>Sharpness: <span id="vS"></span><input id="sS" type="range" min="0" max="200" value="90"></label>
+</div>
+<p class="mut" style="margin:-6px 0 16px">Shadow across the card? Lower the lighting area. Faded portrait? Raise it.</p>
+
+<div class="grid" id="grid"></div>
+
+<div class="foot">
+  <button class="pri" id="dl" disabled>Download PDF</button>
+  <span class="mut" id="msg">Add at least one side to begin.</span>
+</div>
+<p class="mut" style="margin-top:14px">Print the PDF at &ldquo;Actual size&rdquo; (100%), not &ldquo;Fit to page&rdquo;, so each side prints at 8.5 × 5.5 cm.</p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+const OW=1004, OH=650, SS=2, W2=OW*SS, H2=OH*SS;
+const sides={};
+const $=id=>document.getElementById(id);
+
+function mk(id,title){
+  const d=document.createElement('div'); d.className='side';
+  d.innerHTML=`<div class="row"><h2>${title}</h2><div class="row">
+   <label class="btn">Choose photo<input type="file" accept="image/*" id="f_${id}"></label>
+   <button id="r_${id}" disabled>Rotate 90°</button></div></div>
+   <div class="ed" id="e_${id}"><p class="empty mut">Choose a photo, then rotate it until the card reads upright.</p></div>
+   <p class="mut">Handles go top-left, top-right, bottom-right, bottom-left of the upright card.</p>
+   <canvas class="res" id="o_${id}" width="${OW}" height="${OH}"></canvas>`;
+  $('grid').appendChild(d);
+  const S=sides[id]={id,src:null,c:null,disp:null,drag:-1,out:null};
+  $('f_'+id).onchange=e=>{const f=e.target.files[0]; if(f) load(S,f)};
+  $('r_'+id).onclick=()=>{rotate(S)};
+}
+mk('front','Front'); mk('back','Back');
+
+function load(S,file){
+  const img=new Image();
+  img.onload=()=>{
+    const m=2400, k=Math.min(1,m/Math.max(img.width,img.height));
+    const c=document.createElement('canvas'); c.width=Math.round(img.width*k); c.height=Math.round(img.height*k);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    URL.revokeObjectURL(img.src); setSrc(S,c);
+  };
+  img.onerror=()=>{$('msg').textContent='That file could not be read as an image.'};
+  img.src=URL.createObjectURL(file);
+}
+function setSrc(S,c){
+  S.src=c; const w=c.width,h=c.height;
+  S.c=[[.12*w,.12*h],[.88*w,.12*h],[.88*w,.88*h],[.12*w,.88*h]];
+  const e=$('e_'+S.id); e.innerHTML='';
+  const d=document.createElement('canvas'); e.appendChild(d); S.disp=d;
+  const k=Math.min(1,900/Math.max(w,h)); d.width=Math.round(w*k); d.height=Math.round(h*k); S.k=k;
+  d.onpointerdown=ev=>{const p=pos(S,ev); let b=-1,bd=1e9;
+    S.c.forEach((q,i)=>{const dd=(q[0]*S.k-p[0])**2+(q[1]*S.k-p[1])**2; if(dd<bd){bd=dd;b=i}});
+    if(bd<48*48){S.drag=b; d.setPointerCapture(ev.pointerId); ev.preventDefault()}};
+  d.onpointermove=ev=>{if(S.drag<0)return; const p=pos(S,ev);
+    S.c[S.drag]=[Math.max(0,Math.min(w,p[0]/S.k)),Math.max(0,Math.min(h,p[1]/S.k))]; draw(S)};
+  d.onpointerup=d.onpointercancel=()=>{if(S.drag>=0){S.drag=-1; run(S)}};
+  $('r_'+S.id).disabled=false; draw(S); run(S);
+}
+function pos(S,ev){const r=S.disp.getBoundingClientRect(); return [(ev.clientX-r.left)*S.disp.width/r.width,(ev.clientY-r.top)*S.disp.height/r.height]}
+function rotate(S){
+  const s=S.src,c=document.createElement('canvas'); c.width=s.height; c.height=s.width;
+  const x=c.getContext('2d'); x.translate(c.width,0); x.rotate(Math.PI/2); x.drawImage(s,0,0); setSrc(S,c);
+}
+function draw(S){
+  const d=S.disp,x=d.getContext('2d'),k=S.k; x.drawImage(S.src,0,0,d.width,d.height);
+  x.lineWidth=2; x.strokeStyle='#e0a800'; x.beginPath();
+  S.c.forEach((q,i)=>{i?x.lineTo(q[0]*k,q[1]*k):x.moveTo(q[0]*k,q[1]*k)}); x.closePath(); x.stroke();
+  x.font='bold 14px sans-serif'; x.textAlign='center'; x.textBaseline='middle';
+  S.c.forEach((q,i)=>{x.beginPath(); x.arc(q[0]*k,q[1]*k,14,0,7); x.fillStyle='#e0a800'; x.fill(); x.fillStyle='#000'; x.fillText(i+1,q[0]*k,q[1]*k+1)});
+}
+
+/* ---------- image processing ---------- */
+function homography(a,b){ // maps points a[i] -> b[i]
+  const M=[];
+  for(let i=0;i<4;i++){const[x,y]=a[i],[u,v]=b[i];
+    M.push([x,y,1,0,0,0,-u*x,-u*y,u]); M.push([0,0,0,x,y,1,-v*x,-v*y,v]);}
+  for(let i=0;i<8;i++){let p=i;for(let r=i+1;r<8;r++)if(Math.abs(M[r][i])>Math.abs(M[p][i]))p=r;
+    [M[i],M[p]]=[M[p],M[i]];
+    for(let r=0;r<8;r++){if(r===i)continue;const f=M[r][i]/M[i][i];for(let c=i;c<9;c++)M[r][c]-=f*M[i][c];}}
+  return M.map((r,i)=>r[8]/r[i]);
+}
+function boxBlur(a,w,h,r,passes=2){
+  const t=new Float32Array(a.length);
+  for(let p=0;p<passes;p++){
+    for(let y=0;y<h;y++){let s=0;const o=y*w;
+      for(let x=-r;x<=r;x++)s+=a[o+Math.min(w-1,Math.max(0,x))];
+      for(let x=0;x<w;x++){t[o+x]=s/(2*r+1); s+=a[o+Math.min(w-1,x+r+1)]-a[o+Math.max(0,x-r)];}}
+    for(let x=0;x<w;x++){let s=0;
+      for(let y=-r;y<=r;y++)s+=t[Math.min(h-1,Math.max(0,y))*w+x];
+      for(let y=0;y<h;y++){a[y*w+x]=s/(2*r+1); s+=t[Math.min(h-1,y+r+1)*w+x]-t[Math.max(0,y-r)*w+x];}}
+  }
+  return a;
+}
+function mm(a,w,h,r,max){ // separable max/min filter
+  const t=new Float32Array(a.length),o=new Float32Array(a.length),f=max?Math.max:Math.min;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){let m=a[y*w+x];for(let k=Math.max(0,x-r);k<=Math.min(w-1,x+r);k++)m=f(m,a[y*w+k]);t[y*w+x]=m}
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){let m=t[y*w+x];for(let k=Math.max(0,y-r);k<=Math.min(h-1,y+r);k++)m=f(m,t[k*w+x]);o[y*w+x]=m}
+  return o;
+}
+function process(S){
+  const q=S.c,d=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+  const w=(d(q[0],q[1])+d(q[3],q[2]))/2,h=(d(q[0],q[3])+d(q[1],q[2]))/2,t=OW/OH;
+  let x0=0,y0=0,nw=w,nh=h;
+  if(w/h>t){nw=h*t;x0=(w-nw)/2}else{nh=w/t;y0=(h-nh)/2}
+  const H=homography([[0,0],[w,0],[w,h],[0,h]],q);
+  const sc=S.src,sw=sc.width,sh=sc.height,px=sc.getContext('2d').getImageData(0,0,sw,sh).data;
+  const L=new Float32Array(sw*sh);
+  for(let i=0;i<L.length;i++)L[i]=.299*px[i*4]+.587*px[i*4+1]+.114*px[i*4+2];
+  const g=new Float32Array(W2*H2);
+  for(let Y=0;Y<H2;Y++)for(let X=0;X<W2;X++){
+    const u=x0+(X+.5)*nw/W2,v=y0+(Y+.5)*nh/H2,den=H[6]*u+H[7]*v+1;
+    let sx=(H[0]*u+H[1]*v+H[2])/den-.5,sy=(H[3]*u+H[4]*v+H[5])/den-.5;
+    sx=Math.min(sw-1.001,Math.max(0,sx));sy=Math.min(sh-1.001,Math.max(0,sy));
+    const ix=sx|0,iy=sy|0,fx=sx-ix,fy=sy-iy,i=iy*sw+ix;
+    g[Y*W2+X]=(L[i]*(1-fx)+L[i+1]*fx)*(1-fy)+(L[i+sw]*(1-fx)+L[i+sw+1]*fx)*fy;
+  }
+  // lighting map: shrink, close (removes dark print), smooth, enlarge
+  const f=8,bw=Math.ceil(W2/f),bh=Math.ceil(H2/f),sm=new Float32Array(bw*bh),cn=new Float32Array(bw*bh);
+  for(let y=0;y<H2;y++)for(let x=0;x<W2;x++){const j=((y/f)|0)*bw+((x/f)|0);sm[j]+=g[y*W2+x];cn[j]++}
+  for(let i=0;i<sm.length;i++)sm[i]/=cn[i]||1;
+  const cells=+$('sL').value;
+  let bg=mm(mm(sm,bw,bh,cells,true),bw,bh,cells,false);
+  bg=boxBlur(bg,bw,bh,2,2);
+  const flat=new Float32Array(W2*H2),hist=new Uint32Array(1024);
+  for(let y=0;y<H2;y++){const fy=Math.min(bh-1.001,Math.max(0,(y+.5)/f-.5)),iy=fy|0,ay=fy-iy;
+    for(let x=0;x<W2;x++){const fx=Math.min(bw-1.001,Math.max(0,(x+.5)/f-.5)),ix=fx|0,ax=fx-ix,i=iy*bw+ix;
+      const b=(bg[i]*(1-ax)+bg[i+1]*ax)*(1-ay)+(bg[i+bw]*(1-ax)+bg[i+bw+1]*ax)*ay;
+      const v=Math.min(1,g[y*W2+x]/Math.max(b,8));flat[y*W2+x]=v;hist[(v*1023)|0]++}}
+  let acc=0,lo=0;for(let i=0;i<1024;i++){acc+=hist[i];if(acc>=.01*flat.length){lo=i/1023;break}}
+  const hi=.97,gam=+$('sG').value/100,amt=+$('sS').value/100;
+  for(let i=0;i<flat.length;i++)flat[i]=Math.pow(Math.min(1,Math.max(0,(flat[i]-lo)/(hi-lo))),gam);
+  const bl=boxBlur(Float32Array.from(flat),W2,H2,3,2);
+  const o=S.out||(S.out=$('o_'+S.id)),ctx=o.getContext('2d'),im=ctx.createImageData(OW,OH);
+  for(let y=0;y<OH;y++)for(let x=0;x<OW;x++){let s=0;
+    for(let dy=0;dy<SS;dy++)for(let dx=0;dx<SS;dx++){const i=(y*SS+dy)*W2+x*SS+dx;s+=flat[i]*(1+amt)-bl[i]*amt}
+    const v=Math.max(0,Math.min(255,s/(SS*SS)*255)),j=(y*OW+x)*4;
+    im.data[j]=im.data[j+1]=im.data[j+2]=v;im.data[j+3]=255}
+  ctx.putImageData(im,0,0);o.style.display='block';
+}
+let tm;
+function run(S){clearTimeout(tm);$('msg').textContent='Processing…';
+  tm=setTimeout(()=>{ if(S)process(S); ready()},30)}
+function ready(){const n=['front','back'].filter(k=>sides[k].out&&sides[k].src).length;
+  $('dl').disabled=!n;$('msg').textContent=n?(n===2?'Both sides ready.':'One side ready. Add the other, or download as is.'):'Add at least one side to begin.'}
+['sL','sG','sS'].forEach(id=>{
+  const upd=()=>{$('vL').textContent=$('sL').value;$('vG').textContent=($('sG').value/100).toFixed(2);$('vS').textContent=($('sS').value/100).toFixed(1)};
+  $(id).oninput=upd;upd();
+  $(id).onchange=()=>{['front','back'].forEach(k=>{if(sides[k].src)process(sides[k])});ready()};
+});
+
+$('dl').onclick=()=>{
+  const {jsPDF}=window.jspdf,pdf=new jsPDF({unit:'mm',format:'a4',orientation:'portrait'});
+  let x=15; const y=20;
+  ['front','back'].forEach(k=>{const S=sides[k];
+    if(S.src&&S.out){pdf.addImage(S.out.toDataURL('image/png'),'PNG',x,y,85,55,undefined,'FAST')}
+    x+=95});
+  pdf.save('ID_Front_Back.pdf');
+};
+</script>
+</body>
+</html>
