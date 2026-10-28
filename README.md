@@ -1,1 +1,1 @@
-# like-id-scanner
+# id-scanner
